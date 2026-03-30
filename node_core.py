@@ -222,8 +222,9 @@ class NodeCore:
         if total == 0:
             return self.node_id
 
-        # Deterministic seed: last block hash + mempool size
-        seed = self.blockchain.last_block.hash + str(len(self.blockchain.mempool))
+        # Deterministic seed: last block hash + block index ensures all nodes
+        # with the same chain agree on the same validator regardless of mempool state.
+        seed = self.blockchain.last_block.hash + str(self.blockchain.last_block.index)
         rng = random.Random(seed)
         chosen = rng.choices(nodes, weights=weights, k=1)[0]
         return chosen

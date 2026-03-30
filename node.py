@@ -50,7 +50,8 @@ node: NodeCore | None = None  # set in main()
 
 def _node() -> NodeCore:
     """Return the global node instance (guaranteed non-None after startup)."""
-    assert node is not None, "NodeCore not initialised"
+    if node is None:
+        raise RuntimeError("NodeCore not initialised")
     return node
 
 

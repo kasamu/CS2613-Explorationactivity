@@ -193,10 +193,12 @@
   <div class="panel">
     <h2>💸 Send Transaction</h2>
     <div class="form-row">
-      <input type="text" id="tx-recipient" placeholder="Recipient address (64 hex chars)" />
+      <input type="text" id="tx-recipient" placeholder="Recipient address (64 hex chars)"
+             aria-label="Recipient address" />
     </div>
     <div class="form-row">
-      <input type="number" id="tx-amount" placeholder="Amount" min="0.000001" step="0.000001" style="max-width:140px;" />
+      <input type="number" id="tx-amount" placeholder="Amount" min="0.000001" step="0.000001"
+             style="max-width:140px;" aria-label="Transaction amount" />
       <button onclick="sendTransaction()">Send</button>
     </div>
     <p id="tx-result" style="margin-top:8px;font-size:.8rem;color:var(--muted);"></p>
@@ -206,7 +208,8 @@
   <div class="panel">
     <h2>🌐 Add Peer</h2>
     <div class="form-row">
-      <input type="text" id="peer-url" placeholder="http://192.168.1.5:5002" />
+      <input type="text" id="peer-url" placeholder="http://192.168.1.5:5002"
+             aria-label="Peer node URL" />
       <button onclick="addPeer()">Add</button>
     </div>
     <p id="peer-result" style="margin-top:8px;font-size:.8rem;color:var(--muted);"></p>

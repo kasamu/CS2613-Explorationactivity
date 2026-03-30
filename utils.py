@@ -31,9 +31,10 @@ def generate_node_id(host: str, port: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Simple HMAC-style signature using a shared secret.
-# In a production system you would use asymmetric keys (e.g. ECDSA).
-# For this educational simulator a deterministic HMAC is sufficient.
+# Simple deterministic signature using SHA-256.
+# The scheme uses sign_data(payload, key) = SHA-256(json(payload) + ":" + key).
+# This is an educational simulator; a production blockchain would use
+# asymmetric keys (e.g. ECDSA / secp256k1).
 # ---------------------------------------------------------------------------
 
 def sign_data(data: dict, private_key: str) -> str:

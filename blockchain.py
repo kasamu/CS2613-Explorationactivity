@@ -264,10 +264,13 @@ class Blockchain:
         # Check it isn't already in the chain
         if self._tx_in_chain(tx.tx_id):
             return False, "Transaction already confirmed"
-        # Basic balance check (not double-spend proof without full UTXO set)
+        # Balance check accounting for already-pending sends from this sender
         if tx.sender != GENESIS_SENDER:
-            if self.get_balance(tx.sender) < tx.amount:
-                return False, "Insufficient balance"
+            pending_out = sum(
+                t.amount for t in self.mempool if t.sender == tx.sender
+            )
+            if self.get_balance(tx.sender) - pending_out < tx.amount:
+                return False, "Insufficient balance (including pending transactions)"
         self.mempool.append(tx)
         return True, "Transaction added to mempool"
 

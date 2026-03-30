@@ -16,11 +16,12 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 BASE_PORT = 5001
 DEFAULT_NODE_COUNT = 4
-PID_FILE = "/tmp/blockchain_nodes.pids"
+PID_FILE = os.path.join(tempfile.gettempdir(), "blockchain_nodes.pids")
 
 
 def get_peer_urls(count: int, base_port: int = BASE_PORT) -> list[str]:
@@ -49,7 +50,9 @@ def spawn_nodes(count: int) -> list[subprocess.Popen]:
             "--peers", *peers,
         ]
 
-        log_file = open(f"/tmp/node_{node_id}.log", "w")
+        log_file = open(
+            os.path.join(tempfile.gettempdir(), f"node_{node_id}.log"), "w"
+        )
         proc = subprocess.Popen(
             cmd,
             stdout=log_file,
