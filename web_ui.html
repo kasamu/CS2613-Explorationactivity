@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Blockchain Node Dashboard</title>
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --border: #30363d;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --red: #f85149;
+      --yellow: #d29922;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --radius: 8px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      padding: 16px;
+    }
+
+    h1 { font-size: 1.4rem; color: var(--accent); }
+    h2 { font-size: 1rem; color: var(--accent); margin-bottom: 8px; }
+    h3 { font-size: 0.9rem; color: var(--muted); font-weight: 600; }
+
+    /* ── Layout ────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+
+    /* ── Stat cards ────────────────────────────────────────────── */
+    .stats { display: flex; flex-wrap: wrap; gap: 12px; }
+
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 18px;
+      min-width: 120px;
+      text-align: center;
+    }
+    .stat .value { font-size: 1.8rem; font-weight: 700; color: var(--accent); }
+    .stat .label { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+
+    /* ── Table ─────────────────────────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+    td { color: var(--text); word-break: break-all; }
+    tr:last-child td { border-bottom: none; }
+
+    /* ── Badges ─────────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+    .badge-green { background: rgba(63,185,80,.15); color: var(--green); }
+    .badge-blue  { background: rgba(88,166,255,.15); color: var(--accent); }
+    .badge-yellow{ background: rgba(210,153,34,.15); color: var(--yellow); }
+
+    /* ── Buttons ────────────────────────────────────────────────── */
+    button {
+      background: var(--accent);
+      color: #0d1117;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 16px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+    button:hover { opacity: .85; }
+    button.secondary {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+
+    /* ── Form ───────────────────────────────────────────────────── */
+    .form-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    input[type="text"], input[type="number"] {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 7px 12px;
+      font-size: 0.85rem;
+      flex: 1 1 auto;
+      min-width: 80px;
+    }
+    input:focus { outline: none; border-color: var(--accent); }
+
+    /* ── Scrollable list ─────────────────────────────────────────── */
+    .scroll-list {
+      max-height: 220px;
+      overflow-y: auto;
+      font-size: 0.8rem;
+    }
+    .scroll-list::-webkit-scrollbar { width: 6px; }
+    .scroll-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Status indicator ────────────────────────────────────────── */
+    #status-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--red);
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    #status-dot.online { background: var(--green); }
+
+    /* ── Mono text ───────────────────────────────────────────────── */
+    .mono { font-family: 'Courier New', monospace; font-size: 0.78rem; color: var(--muted); }
+    .truncate { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── Toast ───────────────────────────────────────────────────── */
+    #toast {
+      position: fixed; bottom: 20px; right: 20px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px 18px;
+      color: var(--text); font-size: 0.85rem;
+      opacity: 0; pointer-events: none;
+      transition: opacity .3s;
+      max-width: 300px;
+      z-index: 999;
+    }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────── -->
+<header>
+  <div>
+    <h1>⛓ Blockchain Node Dashboard</h1>
+    <span id="node-id-display" class="mono" style="color:var(--muted)">Loading…</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <span id="status-dot"></span>
+    <span id="status-text" style="color:var(--muted);font-size:.82rem">Connecting…</span>
+    <button class="secondary" onclick="refresh()">↻ Refresh</button>
+  </div>
+</header>
+
+<!-- ── Stat cards ─────────────────────────────────────────────── -->
+<div class="stats" style="margin-bottom:16px;">
+  <div class="stat"><div class="value" id="stat-height">–</div><div class="label">Chain Height</div></div>
+  <div class="stat"><div class="value" id="stat-mempool">–</div><div class="label">Mempool</div></div>
+  <div class="stat"><div class="value" id="stat-peers">–</div><div class="label">Peers</div></div>
+  <div class="stat"><div class="value" id="stat-stake">–</div><div class="label">My Stake</div></div>
+  <div class="stat"><div class="value" id="stat-balance">–</div><div class="label">My Balance</div></div>
+</div>
+
+<!-- ── Main grid ───────────────────────────────────────────────── -->
+<div class="grid">
+
+  <!-- Send transaction -->
+  <div class="panel">
+    <h2>💸 Send Transaction</h2>
+    <div class="form-row">
+      <input type="text" id="tx-recipient" placeholder="Recipient address (64 hex chars)" />
+    </div>
+    <div class="form-row">
+      <input type="number" id="tx-amount" placeholder="Amount" min="0.000001" step="0.000001" style="max-width:140px;" />
+      <button onclick="sendTransaction()">Send</button>
+    </div>
+    <p id="tx-result" style="margin-top:8px;font-size:.8rem;color:var(--muted);"></p>
+  </div>
+
+  <!-- Add peer -->
+  <div class="panel">
+    <h2>🌐 Add Peer</h2>
+    <div class="form-row">
+      <input type="text" id="peer-url" placeholder="http://192.168.1.5:5002" />
+      <button onclick="addPeer()">Add</button>
+    </div>
+    <p id="peer-result" style="margin-top:8px;font-size:.8rem;color:var(--muted);"></p>
+    <h3 style="margin-top:12px;">Connected Peers</h3>
+    <ul id="peers-list" style="margin-top:6px;font-size:.82rem;list-style:none;">
+      <li class="mono" style="color:var(--muted);">Loading…</li>
+    </ul>
+  </div>
+
+</div>
+
+<!-- ── Mempool ─────────────────────────────────────────────────── -->
+<div class="panel" style="margin-bottom:16px;">
+  <h2>⏳ Mempool (pending transactions)</h2>
+  <div class="scroll-list">
+    <table>
+      <thead><tr><th>TX ID</th><th>From</th><th>To</th><th>Amount</th><th>Time</th></tr></thead>
+      <tbody id="mempool-body"><tr><td colspan="5" style="color:var(--muted);">Empty</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Blockchain ──────────────────────────────────────────────── -->
+<div class="panel">
+  <h2>🔗 Blockchain</h2>
+  <div class="scroll-list">
+    <table>
+      <thead><tr><th>#</th><th>Hash</th><th>Prev Hash</th><th>Txs</th><th>Validator</th><th>Time</th></tr></thead>
+      <tbody id="chain-body"><tr><td colspan="6" style="color:var(--muted);">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Toast ──────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<!-- ── Script ─────────────────────────────────────────────────── -->
+<script>
+  // The dashboard talks to the same host that served this page.
+  const API = '';   // empty string = same origin
+
+  // ── Helpers ────────────────────────────────────────────────────
+
+  function toast(msg, isError = false) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.style.borderColor = isError ? 'var(--red)' : 'var(--green)';
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 3000);
+  }
+
+  function ts(unix) {
+    return new Date(unix * 1000).toLocaleTimeString();
+  }
+
+  function trunc(s, n = 12) {
+    if (!s) return '–';
+    return s.length > n ? s.slice(0, n) + '…' : s;
+  }
+
+  async function apiFetch(path, opts = {}) {
+    const r = await fetch(API + path, opts);
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+
+  // ── Data fetching ───────────────────────────────────────────────
+
+  async function loadNodeInfo() {
+    try {
+      const info = await apiFetch('/api/node-info');
+      document.getElementById('node-id-display').textContent =
+        'Node: ' + info.node_id + '  |  ' + info.host + ':' + info.port;
+      document.getElementById('stat-height').textContent = info.chain_height;
+      document.getElementById('stat-mempool').textContent = info.mempool_size;
+      document.getElementById('stat-peers').textContent = info.peers.length;
+      document.getElementById('stat-stake').textContent = info.stake;
+      document.getElementById('stat-balance').textContent =
+        parseFloat(info.balance).toFixed(2);
+
+      document.getElementById('status-dot').className = 'online';
+      document.getElementById('status-text').textContent = 'Online';
+    } catch(e) {
+      document.getElementById('status-dot').className = '';
+      document.getElementById('status-text').textContent = 'Offline';
+    }
+  }
+
+  async function loadPeers() {
+    try {
+      const data = await apiFetch('/api/peers');
+      const ul = document.getElementById('peers-list');
+      if (!data.peers.length) {
+        ul.innerHTML = '<li class="mono" style="color:var(--muted);">No peers connected</li>';
+        return;
+      }
+      ul.innerHTML = data.peers
+        .map(p => `<li class="mono" style="color:var(--text);padding:2px 0;">${p}</li>`)
+        .join('');
+    } catch(e) { /* ignore */ }
+  }
+
+  async function loadMempool() {
+    try {
+      const data = await apiFetch('/api/mempool');
+      const tbody = document.getElementById('mempool-body');
+      if (!data.transactions.length) {
+        tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);">Empty</td></tr>';
+        return;
+      }
+      tbody.innerHTML = data.transactions.map(tx => `
+        <tr>
+          <td class="mono truncate">${trunc(tx.tx_id, 14)}</td>
+          <td class="mono truncate">${trunc(tx.sender, 14)}</td>
+          <td class="mono truncate">${trunc(tx.recipient, 14)}</td>
+          <td>${parseFloat(tx.amount).toFixed(6)}</td>
+          <td>${ts(tx.timestamp)}</td>
+        </tr>`).join('');
+    } catch(e) { /* ignore */ }
+  }
+
+  async function loadChain() {
+    try {
+      const data = await apiFetch('/api/chain');
+      const tbody = document.getElementById('chain-body');
+      // Show newest first
+      const blocks = [...data.chain].reverse();
+      tbody.innerHTML = blocks.map(b => `
+        <tr>
+          <td>${b.index}</td>
+          <td class="mono truncate">${trunc(b.hash, 14)}</td>
+          <td class="mono truncate">${trunc(b.previous_hash, 14)}</td>
+          <td><span class="badge badge-blue">${b.transactions.length}</span></td>
+          <td class="mono truncate">${trunc(b.validator, 12)}</td>
+          <td>${b.timestamp === 0 ? 'Genesis' : ts(b.timestamp)}</td>
+        </tr>`).join('');
+    } catch(e) { /* ignore */ }
+  }
+
+  async function refresh() {
+    await Promise.all([loadNodeInfo(), loadPeers(), loadMempool(), loadChain()]);
+  }
+
+  // ── Actions ─────────────────────────────────────────────────────
+
+  async function sendTransaction() {
+    const recipient = document.getElementById('tx-recipient').value.trim();
+    const amount    = parseFloat(document.getElementById('tx-amount').value);
+    const resultEl  = document.getElementById('tx-result');
+
+    if (!recipient) { resultEl.textContent = '❌ Recipient required'; return; }
+    if (!amount || amount <= 0) { resultEl.textContent = '❌ Invalid amount'; return; }
+
+    try {
+      const res = await apiFetch('/api/transaction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient, amount })
+      });
+      resultEl.style.color = res.success ? 'var(--green)' : 'var(--red)';
+      resultEl.textContent = (res.success ? '✅ ' : '❌ ') + res.message;
+      if (res.success) {
+        document.getElementById('tx-recipient').value = '';
+        document.getElementById('tx-amount').value = '';
+        setTimeout(refresh, 500);
+        toast('Transaction submitted!');
+      }
+    } catch(e) {
+      resultEl.style.color = 'var(--red)';
+      resultEl.textContent = '❌ Request failed: ' + e.message;
+      toast('Transaction failed', true);
+    }
+  }
+
+  async function addPeer() {
+    const url       = document.getElementById('peer-url').value.trim();
+    const resultEl  = document.getElementById('peer-result');
+    if (!url) { resultEl.textContent = '❌ URL required'; return; }
+
+    try {
+      const res = await apiFetch('/api/peer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      resultEl.style.color = res.success ? 'var(--green)' : 'var(--yellow)';
+      resultEl.textContent = (res.success ? '✅ ' : 'ℹ️ ') + res.message;
+      if (res.success) {
+        document.getElementById('peer-url').value = '';
+        setTimeout(refresh, 300);
+        toast('Peer added!');
+      }
+    } catch(e) {
+      resultEl.style.color = 'var(--red)';
+      resultEl.textContent = '❌ ' + e.message;
+      toast('Failed to add peer', true);
+    }
+  }
+
+  // The /api/transaction endpoint on the server expects a full signed tx,
+  // but for the dashboard we allow sending by address only (the node signs it).
+  // The node.py /api/transaction route already handles that via node_core.create_transaction.
+  // We re-wire the send button to POST to a helper on the server (node creates the tx).
+  //
+  // Note: "recipient" in the form is the destination address (public key).
+  //       For demo purposes, the node signs with its own private key.
+
+  // ── Auto-refresh ────────────────────────────────────────────────
+
+  refresh();
+  setInterval(refresh, 10000);   // poll every 10 seconds
+</script>
+
+</body>
+</html>
