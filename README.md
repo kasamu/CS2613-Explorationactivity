@@ -2,8 +2,8 @@
 
 A distributed blockchain network where each phone (or laptop) acts as an
 independent **validator node**, communicating over WiFi to create a shared
-decentralized ledger using a simplified **Proof-of-Stake (PoS)** consensus
-mechanism.
+decentralized ledger using **Proof-of-Authority (PoA)** consensus and a
+**FastAPI** REST server.
 
 ---
 
@@ -13,11 +13,11 @@ mechanism.
 |---|---|
 | `blockchain.py` | `Block`, `Transaction`, and `Blockchain` classes — core data structures |
 | `utils.py` | SHA-256 hashing, key generation, signing, Merkle root |
-| `config.py` | Tunable parameters (ports, stake, block size, peer URLs) |
-| `node_core.py` | Node logic: mempool, PoS election, broadcasting, chain sync |
-| `node.py` | Flask REST API server — one instance per phone |
+| `config.py` | Tunable parameters (block size, PoA validators, peer URLs) |
+| `node_core.py` | Node logic: mempool, PoA round-robin election, broadcasting, chain sync |
+| `node.py` | **FastAPI** REST server — one instance per phone (served by uvicorn) |
 | `run_network.py` | Helper script to spawn multiple nodes locally for testing |
-| `web_ui.html` | Browser dashboard — real-time chain, mempool, and peers |
+| `web_ui.html` | Browser dashboard — real-time chain, mempool, PoA status, and peers |
 | `README.md` | This file |
 
 ---
@@ -27,10 +27,10 @@ mechanism.
 ### 1. Install dependencies
 
 ```bash
-pip install flask requests
+pip install fastapi uvicorn requests
 ```
 
-> **On Android (Termux):** `pkg install python` then `pip install flask requests`
+> **On Android (Termux):** `pkg install python` then the same `pip install` command.
 
 ### 2. Clone the repo on every phone
 
@@ -49,11 +49,15 @@ ip route get 1 | awk '{print $7}'
 ip addr show wlan0
 ```
 
-### 4. Edit `config.py` (optional)
+### 4. Edit `config.py`
 
-Open `config.py` and add the other phones' URLs to `NODE_PEERS`:
+Open `config.py` and:
+- Set `AUTHORIZED_VALIDATORS` to the `--node-id` values you will use on each phone.
+- Optionally pre-populate `NODE_PEERS` with the other phones' URLs.
 
 ```python
+AUTHORIZED_VALIDATORS = ["node1", "node2", "node3", "node4"]
+
 NODE_PEERS = [
     "http://192.168.1.101:5001",
     "http://192.168.1.102:5002",
@@ -78,7 +82,7 @@ python node.py --port 5002 --node-id node2 \
   --peers http://192.168.1.101:5001 http://192.168.1.103:5003 http://192.168.1.104:5004
 ```
 
-Repeat for phones C and D (ports 5003 / 5004).
+Repeat for phones C and D (ports 5003 / 5004, node-ids node3 / node4).
 
 ### 6. Open the dashboard
 
@@ -88,6 +92,8 @@ In any browser on the same WiFi:
 http://192.168.1.101:5001      ← Phone A's dashboard
 http://192.168.1.102:5002      ← Phone B's dashboard
 ```
+
+The dashboard also shows the FastAPI auto-generated docs at `/docs`.
 
 ---
 
@@ -107,23 +113,24 @@ Then open `http://127.0.0.1:5001` through `http://127.0.0.1:5004`.
 
 ## 📡 REST API Reference
 
-Every node exposes these endpoints:
+Every node exposes these endpoints (auto-documented at `/docs`):
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/api/transaction` | Submit / forward a transaction |
-| `POST` | `/api/block` | Receive a validated block from a peer |
+| `POST` | `/api/block` | Receive a forged block from a peer validator |
 | `POST` | `/api/peer` | Register a peer node URL |
 | `GET` | `/api/chain` | Full blockchain ledger (JSON) |
 | `GET` | `/api/mempool` | Pending (unconfirmed) transactions |
 | `GET` | `/api/peers` | List of connected peers |
-| `GET` | `/api/node-info` | Node identity, stake, balance |
+| `GET` | `/api/node-info` | Node identity, PoA status, balance |
 | `GET` | `/` | Web dashboard |
+| `GET` | `/docs` | Interactive Swagger UI (FastAPI built-in) |
 
 ### Example: submit a transaction with `curl`
 
 ```bash
-# Let the node sign the transaction itself (sender = node's own address)
+# The node signs the transaction from its own wallet
 curl -X POST http://127.0.0.1:5001/api/transaction \
   -H "Content-Type: application/json" \
   -d '{"recipient":"<64-hex-address>","amount":10}'
@@ -131,24 +138,39 @@ curl -X POST http://127.0.0.1:5001/api/transaction \
 
 ---
 
-## 🎯 Consensus Mechanism (Simplified PoS)
+## 🎯 Consensus Mechanism — Proof of Authority (PoA)
 
-1. Every **5 transactions** accumulated in the mempool trigger a validator
-   election.
-2. The validator is selected **weighted-randomly** by stake (all nodes start
-   with `INITIAL_STAKE = 100`).
-3. The elected node forges a block and **broadcasts** it to all peers.
-4. Peers validate and append the block; the validator earns a
-   `BLOCK_REWARD = 10` stake increase.
-5. **Fork resolution** uses the longest-chain rule: if a peer's chain is
-   longer and valid, the local chain is replaced.
+1. **`AUTHORIZED_VALIDATORS`** in `config.py` is the explicit allow-list of
+   node IDs that may forge blocks.  Only these nodes are trusted.
+2. When the mempool reaches **`TRANSACTIONS_PER_BLOCK`** (default 5) transactions,
+   a block forging is triggered.
+3. The **round-robin** turn order is fully deterministic:
+   ```
+   validator = AUTHORIZED_VALIDATORS[next_block_index % len(AUTHORIZED_VALIDATORS)]
+   ```
+   All nodes with the same chain always agree on whose turn it is — no
+   randomness, no stake weighting.
+4. The elected node forges a block and **broadcasts** it to all peers.
+5. Peers validate the block (hash integrity + PoA authority check) and append it.
+6. **Fork resolution** uses the longest-chain rule: if a peer's chain is
+   longer and fully valid, the local chain is replaced.
+7. Blocks from unauthorised nodes are **rejected**.
+
+### Why PoA instead of PoS?
+
+| | PoS | PoA |
+|---|---|---|
+| Who can validate? | Anyone with stake | Pre-approved list only |
+| Turn order | Probabilistic (weighted random) | Deterministic (round-robin) |
+| Trust model | Economic incentives | Identity / reputation |
+| Good for | Public blockchains | Permissioned / private networks |
 
 ---
 
 ## 🔑 Cryptography
 
 - Keys are deterministically derived with SHA-256 (educational simulator).
-- Transactions are signed with an HMAC-SHA256 scheme.
+- Transactions are signed with a SHA-256 scheme.
 - Block integrity is verified by recomputing the block hash.
 - A Merkle root is stored in each block for transaction integrity.
 
@@ -162,9 +184,8 @@ curl -X POST http://127.0.0.1:5001/api/transaction \
 
 | Parameter | Default | Description |
 |---|---|---|
-| `TRANSACTIONS_PER_BLOCK` | `5` | Mempool size that triggers block creation |
-| `INITIAL_STAKE` | `100` | Starting stake for every node |
-| `BLOCK_REWARD` | `10` | Stake bonus for the block creator |
+| `AUTHORIZED_VALIDATORS` | `["node1","node2","node3","node4"]` | PoA allow-list of node IDs |
+| `TRANSACTIONS_PER_BLOCK` | `5` | Mempool depth that triggers block creation |
 | `SYNC_INTERVAL_SECONDS` | `30` | How often nodes poll peers for a longer chain |
 | `REQUEST_TIMEOUT_SECONDS` | `5` | HTTP timeout for peer requests |
 
@@ -174,10 +195,11 @@ curl -X POST http://127.0.0.1:5001/api/transaction \
 
 - ✅ 4 phones connect over WiFi and discover each other
 - ✅ Transaction created on one node broadcasts to all peers
-- ✅ Block created by the elected validator validates on all nodes
+- ✅ Block forged by the PoA turn-holder validates on all nodes
+- ✅ Unauthorised nodes cannot forge blocks
 - ✅ All nodes maintain identical blockchain after sync
 - ✅ Consensus mechanism prevents double-spending (balance check)
-- ✅ Web dashboard shows real-time chain, mempool, and peer state
+- ✅ Web dashboard shows real-time chain, mempool, PoA status, and peers
 
 ---
 
@@ -188,5 +210,7 @@ curl -X POST http://127.0.0.1:5001/api/transaction \
 | Distributed systems | Each node is independent; consensus is needed for agreement |
 | P2P networking | REST over WiFi; broadcast to all peers |
 | Cryptography | Hashing, signing, Merkle trees |
-| Consensus algorithms | PoS validator election, longest-chain fork resolution |
-| Blockchain data structures | Linked blocks, transactions, UTXO-style balances |
+| Consensus algorithms | PoA round-robin, longest-chain fork resolution |
+| Permissioned blockchains | Authority lists vs. open participation |
+| FastAPI / uvicorn | Modern async Python web framework and ASGI server |
+| Blockchain data structures | Linked blocks, transactions, balance ledger |

@@ -1,8 +1,11 @@
 """
-run_network.py - Launch multiple blockchain nodes on the local machine.
+run_network.py - Launch multiple PoA blockchain nodes on the local machine.
 
 Useful for local testing before deploying to real phones.
 By default spawns 4 nodes on ports 5001-5004.
+Each node is started with node_id node1..node4, which matches the default
+AUTHORIZED_VALIDATORS list in config.py.
+Node logs are written to the system temp directory.
 
 Usage:
     python run_network.py              # spawn 4 nodes

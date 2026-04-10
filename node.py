@@ -1,5 +1,5 @@
 """
-node.py - Flask REST API server for a blockchain node.
+node.py - FastAPI REST server for a blockchain node (Proof-of-Authority).
 
 Run one instance per phone / terminal:
     python node.py --port 5001 --node-id node1 --peers http://192.168.1.5:5002
@@ -11,7 +11,7 @@ API endpoints:
     GET    /api/chain         Return the full blockchain ledger
     GET    /api/mempool       View pending transactions
     GET    /api/peers         List connected peers
-    GET    /api/node-info     Node identity and stake info
+    GET    /api/node-info     Node identity and PoA status
     GET    /                  Serve the web dashboard (web_ui.html)
 """
 from __future__ import annotations
@@ -21,16 +21,19 @@ import logging
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
+from typing import Any, Optional
 
-from flask import Flask, jsonify, request, send_from_directory
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, field_validator
 
 from config import (
-    DEBUG,
     DEFAULT_HOST,
     DEFAULT_PORT,
     NODE_PEERS,
     SYNC_INTERVAL_SECONDS,
-    THREADED,
 )
 from node_core import NodeCore
 
@@ -40,138 +43,184 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
-node: NodeCore | None = None  # set in main()
+# Global node instance — set during startup via the lifespan context.
+_node: NodeCore | None = None
+
+
+# ---------------------------------------------------------------------------
+# Pydantic request models
+# ---------------------------------------------------------------------------
+
+class TransactionRequest(BaseModel):
+    """
+    Two accepted forms:
+    - Client shorthand: {"recipient": "<addr>", "amount": 10}
+    - Peer-forwarded:   full transaction dict with tx_id, sender, signature …
+    """
+    # Client shorthand fields
+    recipient: Optional[str] = None
+    amount: Optional[float] = None
+    # Peer-forwarded fields (all optional so one model covers both forms)
+    tx_id: Optional[str] = None
+    sender: Optional[str] = None
+    timestamp: Optional[float] = None
+    signature: Optional[str] = None
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def amount_positive(cls, v):
+        if v is not None and float(v) <= 0:
+            raise ValueError("Amount must be positive")
+        return v
+
+
+class BlockRequest(BaseModel):
+    index: int
+    timestamp: float
+    transactions: list[dict]
+    previous_hash: str
+    validator: str
+    merkle_root: str
+    hash: str
+
+
+class PeerRequest(BaseModel):
+    url: str
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _node() -> NodeCore:
-    """Return the global node instance (guaranteed non-None after startup)."""
-    if node is None:
-        raise RuntimeError("NodeCore not initialised")
-    return node
-
-
-def _json_error(message: str, status: int = 400):
-    return jsonify({"success": False, "message": message}), status
+def get_node() -> NodeCore:
+    if _node is None:
+        raise HTTPException(status_code=503, detail="NodeCore not initialised")
+    return _node
 
 
 # ---------------------------------------------------------------------------
-# API Routes
+# App factory / lifespan
 # ---------------------------------------------------------------------------
 
-@app.route("/api/transaction", methods=["POST"])
-def api_transaction():
+def create_app(node: NodeCore, seed_peers: list[str]) -> FastAPI:
     """
-    Accept a transaction in two forms:
-
-    1. **Peer-forwarded** – full signed transaction dict (contains 'tx_id',
-       'sender', 'signature', etc.).  Validated and added to the mempool.
-
-    2. **Client shorthand** – just ``{"recipient": "<addr>", "amount": <n>}``.
-       The node creates and signs the transaction from its own wallet.
+    Build the FastAPI application and register all routes.
+    A lifespan context handles startup peer-sync and background sync thread.
     """
-    data = request.get_json(silent=True)
-    if not data:
-        return _json_error("No JSON body provided")
 
-    # Client shorthand: node creates and signs the transaction
-    if "tx_id" not in data:
-        recipient = data.get("recipient", "")
-        try:
-            amount = float(data.get("amount", 0))
-        except (TypeError, ValueError):
-            return _json_error("Invalid amount")
-        if not recipient:
-            return _json_error("Missing 'recipient' field")
-        if amount <= 0:
-            return _json_error("Amount must be positive")
-        result = _node().create_transaction(recipient=recipient, amount=amount)
-        status = 201 if result.get("success") else 400
-        return jsonify(result), status
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        global _node
+        _node = node
 
-    # Peer-forwarded full transaction
-    ok, msg = _node().receive_transaction(data)
-    status = 201 if ok else 400
-    return jsonify({"success": ok, "message": msg}), status
+        # Connect to seed peers and sync chain
+        if seed_peers:
+            logger.info("Connecting to seed peers: %s", seed_peers)
+            node.sync_peers_on_startup(seed_peers)
 
+        # Background chain-sync thread
+        def _bg_sync():
+            while True:
+                time.sleep(SYNC_INTERVAL_SECONDS)
+                try:
+                    node.sync_chain()
+                except Exception as exc:
+                    logger.debug("Background sync error: %s", exc)
 
-@app.route("/api/block", methods=["POST"])
-def api_block():
-    """Receive a mined block from a peer validator."""
-    data = request.get_json(silent=True)
-    if not data:
-        return _json_error("No JSON body provided")
+        threading.Thread(target=_bg_sync, daemon=True).start()
+        yield
+        # (shutdown hook — nothing needed for this simulator)
 
-    ok, msg = _node().receive_block(data)
-    status = 201 if ok else 400
-    return jsonify({"success": ok, "message": msg}), status
+    app = FastAPI(
+        title="Blockchain Node (PoA)",
+        description="Proof-of-Authority distributed blockchain node",
+        version="2.0.0",
+        lifespan=lifespan,
+    )
 
+    # -----------------------------------------------------------------------
+    # Routes
+    # -----------------------------------------------------------------------
 
-@app.route("/api/peer", methods=["POST"])
-def api_add_peer():
-    """Register a new peer node."""
-    data = request.get_json(silent=True)
-    if not data or "url" not in data:
-        return _json_error("Missing 'url' field")
+    @app.post("/api/transaction", status_code=201)
+    async def api_transaction(body: TransactionRequest):
+        """
+        Accept a transaction in two forms:
 
-    ok, msg = _node().add_peer(data["url"])
-    status = 201 if ok else 200
-    return jsonify({"success": ok, "message": msg}), status
+        **Client shorthand** — ``{"recipient": "<addr>", "amount": N}``
+        The node creates and signs the transaction from its own wallet.
 
+        **Peer-forwarded** — full signed transaction dict (contains ``tx_id``,
+        ``sender``, ``signature``, etc.).
+        """
+        n = get_node()
 
-@app.route("/api/chain", methods=["GET"])
-def api_chain():
-    """Return the node's full blockchain."""
-    return jsonify(_node().blockchain.to_dict()), 200
+        if body.tx_id is None:
+            # Client shorthand
+            if not body.recipient:
+                raise HTTPException(status_code=400, detail="Missing 'recipient' field")
+            if body.amount is None or body.amount <= 0:
+                raise HTTPException(status_code=400, detail="Amount must be positive")
+            result = n.create_transaction(recipient=body.recipient, amount=body.amount)
+            if not result.get("success"):
+                raise HTTPException(status_code=400, detail=result["message"])
+            return result
 
+        # Peer-forwarded full transaction
+        tx_data = body.model_dump(exclude_none=True)
+        ok, msg = n.receive_transaction(tx_data)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        return {"success": True, "message": msg}
 
-@app.route("/api/mempool", methods=["GET"])
-def api_mempool():
-    """Return pending (unconfirmed) transactions."""
-    return jsonify({"transactions": _node().blockchain.get_mempool_dicts()}), 200
+    @app.post("/api/block", status_code=201)
+    async def api_block(body: BlockRequest):
+        """Receive a forged block from a peer PoA validator."""
+        n = get_node()
+        ok, msg = n.receive_block(body.model_dump())
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        return {"success": True, "message": msg}
 
+    @app.post("/api/peer", status_code=201)
+    async def api_add_peer(body: PeerRequest):
+        """Register a new peer node URL."""
+        n = get_node()
+        ok, msg = n.add_peer(body.url)
+        return {"success": ok, "message": msg}
 
-@app.route("/api/peers", methods=["GET"])
-def api_peers():
-    """Return the list of known peers."""
-    return jsonify({"peers": _node().get_peers()}), 200
+    @app.get("/api/chain")
+    async def api_chain():
+        """Return the node's full blockchain."""
+        return get_node().blockchain.to_dict()
 
+    @app.get("/api/mempool")
+    async def api_mempool():
+        """Return pending (unconfirmed) transactions."""
+        return {"transactions": get_node().blockchain.get_mempool_dicts()}
 
-@app.route("/api/node-info", methods=["GET"])
-def api_node_info():
-    """Return this node's identity and state."""
-    return jsonify(_node().node_info()), 200
+    @app.get("/api/peers")
+    async def api_peers():
+        """Return the list of known peers."""
+        return {"peers": get_node().get_peers()}
 
+    @app.get("/api/node-info")
+    async def api_node_info():
+        """Return this node's identity, PoA status, and chain state."""
+        return get_node().node_info()
 
-# ---------------------------------------------------------------------------
-# Web dashboard
-# ---------------------------------------------------------------------------
+    @app.get("/")
+    async def index():
+        """Serve the web dashboard."""
+        html_path = os.path.join(os.path.dirname(__file__), "web_ui.html")
+        if os.path.exists(html_path):
+            return FileResponse(html_path, media_type="text/html")
+        return JSONResponse(
+            {"message": "Blockchain node running — web_ui.html not found"},
+            status_code=200,
+        )
 
-@app.route("/")
-def index():
-    """Serve the web dashboard."""
-    html_path = os.path.join(os.path.dirname(__file__), "web_ui.html")
-    if os.path.exists(html_path):
-        return send_from_directory(os.path.dirname(html_path), "web_ui.html")
-    return "<h1>Blockchain Node Running</h1><p>web_ui.html not found.</p>", 200
-
-
-# ---------------------------------------------------------------------------
-# Background sync thread
-# ---------------------------------------------------------------------------
-
-def _background_sync(n: NodeCore, interval: int) -> None:
-    """Periodically synchronise chain with peers."""
-    while True:
-        time.sleep(interval)
-        try:
-            n.sync_chain()
-        except Exception as exc:
-            logger.debug("Background sync error: %s", exc)
+    return app
 
 
 # ---------------------------------------------------------------------------
@@ -179,13 +228,13 @@ def _background_sync(n: NodeCore, interval: int) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    global node
-
-    parser = argparse.ArgumentParser(description="Blockchain Node Server")
+    parser = argparse.ArgumentParser(description="Blockchain Node Server (FastAPI/PoA)")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--node-id", dest="node_id", default=None,
-                        help="Human-readable node identifier")
+    parser.add_argument(
+        "--node-id", dest="node_id", default=None,
+        help="Human-readable node identifier (must be in AUTHORIZED_VALIDATORS to forge)",
+    )
     parser.add_argument(
         "--peers",
         nargs="*",
@@ -195,28 +244,20 @@ def main() -> None:
     args = parser.parse_args()
 
     node = NodeCore(host=args.host, port=args.port, node_id=args.node_id)
+    seed_peers = args.peers or []
 
-    # Connect to seed peers and sync chain
-    if args.peers:
-        logger.info("Connecting to seed peers: %s", args.peers)
-        node.sync_peers_on_startup(args.peers)
-
-    # Start background chain-sync thread
-    sync_thread = threading.Thread(
-        target=_background_sync,
-        args=(node, SYNC_INTERVAL_SECONDS),
-        daemon=True,
-    )
-    sync_thread.start()
+    app = create_app(node, seed_peers)
 
     logger.info(
-        "Starting node %s on http://%s:%d",
+        "Starting PoA node '%s' on http://%s:%d  authorized=%s",
         node.node_id,
         args.host,
         args.port,
+        node.is_authorized,
     )
-    app.run(host=args.host, port=args.port, debug=DEBUG, threaded=THREADED)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":
     main()
+

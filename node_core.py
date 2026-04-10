@@ -1,8 +1,13 @@
 """
 node_core.py - Core blockchain node logic.
 
-Manages blockchain state, peer list, PoS validator selection,
+Manages blockchain state, peer list, PoA validator selection,
 transaction broadcasting, and block forging/propagation.
+
+Consensus: Proof-of-Authority (PoA)
+  - Only node IDs in config.AUTHORIZED_VALIDATORS may forge blocks.
+  - Turn order is round-robin by block index:
+      validator = AUTHORIZED_VALIDATORS[next_block_index % len(AUTHORIZED_VALIDATORS)]
 """
 from __future__ import annotations
 
@@ -15,9 +20,8 @@ import requests
 
 from blockchain import Block, Blockchain, Transaction
 from config import (
-    BLOCK_REWARD,
+    AUTHORIZED_VALIDATORS,
     BLOCKCHAIN_FILE,
-    INITIAL_STAKE,
     REQUEST_TIMEOUT_SECONDS,
     TRANSACTIONS_PER_BLOCK,
 )
@@ -31,11 +35,11 @@ class NodeCore:
     The heart of a blockchain node.
 
     Responsibilities:
-    - Own identity (node_id, keys, stake)
+    - Own identity (node_id, keys)
     - Maintain blockchain + mempool
     - Track peers
     - Broadcast transactions and blocks
-    - PoS validator selection
+    - PoA turn-based validator selection
     - Chain synchronisation
     """
 
@@ -50,12 +54,38 @@ class NodeCore:
         self.peers: list[str] = []  # list of peer base-URLs
         self._lock = threading.Lock()
 
+        auth_status = "AUTHORIZED" if self.is_authorized else "observer"
         logger.info(
-            "NodeCore initialised: id=%s address=%s port=%d",
+            "NodeCore initialised: id=%s (%s) address=%s port=%d",
             self.node_id,
+            auth_status,
             self.address[:16],
             self.port,
         )
+
+    # ------------------------------------------------------------------
+    # PoA helpers
+    # ------------------------------------------------------------------
+    @property
+    def is_authorized(self) -> bool:
+        """True when this node is in the PoA allow-list."""
+        return not AUTHORIZED_VALIDATORS or self.node_id in AUTHORIZED_VALIDATORS
+
+    def _select_validator(self) -> str:
+        """
+        Round-robin PoA validator selection.
+
+        The node that should forge the *next* block is:
+            AUTHORIZED_VALIDATORS[next_index % len(AUTHORIZED_VALIDATORS)]
+        where next_index = last_block.index + 1.
+
+        All nodes with the same chain always agree on whose turn it is.
+        If AUTHORIZED_VALIDATORS is empty every node may forge.
+        """
+        if not AUTHORIZED_VALIDATORS:
+            return self.node_id
+        next_index = self.blockchain.last_block.index + 1
+        return AUTHORIZED_VALIDATORS[next_index % len(AUTHORIZED_VALIDATORS)]
 
     # ------------------------------------------------------------------
     # Persistence
@@ -106,10 +136,12 @@ class NodeCore:
             "address": self.address,
             "host": self.host,
             "port": self.port,
+            "is_authorized": self.is_authorized,
+            "next_validator": self._select_validator(),
+            "authorized_validators": AUTHORIZED_VALIDATORS,
             "chain_height": self.blockchain.height,
             "mempool_size": len(self.blockchain.mempool),
             "peers": self.peers,
-            "stake": self.blockchain.get_stake(self.node_id),
             "balance": self.blockchain.get_balance(self.address),
             "timestamp": current_timestamp(),
         }
@@ -143,7 +175,8 @@ class NodeCore:
         try:
             tx = Transaction.from_dict(tx_data)
         except (KeyError, ValueError) as exc:
-            return False, f"Malformed transaction: {exc}"
+            logger.debug("Malformed transaction received: %s", exc)
+            return False, "Malformed transaction data"
 
         ok, msg = self.blockchain.add_to_mempool(tx)
         if ok:
@@ -164,7 +197,8 @@ class NodeCore:
         try:
             block = Block.from_dict(block_data)
         except (KeyError, ValueError) as exc:
-            return False, f"Malformed block: {exc}"
+            logger.debug("Malformed block received: %s", exc)
+            return False, "Malformed block data"
 
         with self._lock:
             ok, msg = self.blockchain.add_block(block)
@@ -175,7 +209,7 @@ class NodeCore:
     def _forge_block(self) -> Block | None:
         """
         Create a new block from the current mempool and broadcast it.
-        Called only when this node is the elected validator.
+        Called only when it is this node's PoA turn.
         """
         with self._lock:
             if len(self.blockchain.mempool) < TRANSACTIONS_PER_BLOCK:
@@ -191,11 +225,6 @@ class NodeCore:
             return None
 
         logger.info("Forged block %d with %d txs", block.index, len(block.transactions))
-        # Reward the validator
-        self.blockchain.set_stake(
-            self.node_id,
-            self.blockchain.get_stake(self.node_id) + BLOCK_REWARD,
-        )
         self.save()
         self._broadcast_block(block)
         return block
@@ -204,58 +233,13 @@ class NodeCore:
         self._broadcast_post("/api/block", block.to_dict())
 
     # ------------------------------------------------------------------
-    # PoS validator selection
-    # ------------------------------------------------------------------
-    def _select_validator(self) -> str:
-        """
-        Weighted random validator selection based on stake.
-        Uses the current mempool size as a deterministic seed so all
-        nodes with the same state agree on the same validator.
-        """
-        import random
-
-        nodes: list[str] = [self.node_id] + [
-            self._url_to_node_id(p) for p in self.peers
-        ]
-        weights = [self.blockchain.get_stake(nid) for nid in nodes]
-        total = sum(weights)
-        if total == 0:
-            return self.node_id
-
-        # Deterministic seed: last block hash + block index ensures all nodes
-        # with the same chain agree on the same validator regardless of mempool state.
-        seed = self.blockchain.last_block.hash + str(self.blockchain.last_block.index)
-        rng = random.Random(seed)
-        chosen = rng.choices(nodes, weights=weights, k=1)[0]
-        return chosen
-
-    def _url_to_node_id(self, peer_url: str) -> str:
-        """Ask peer for its node_id; fall back to a hash of the URL."""
-        try:
-            resp = requests.get(
-                f"{peer_url}/api/node-info",
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
-            if resp.ok:
-                return resp.json().get("node_id", self._hash_url(peer_url))
-        except Exception:
-            pass
-        return self._hash_url(peer_url)
-
-    @staticmethod
-    def _hash_url(url: str) -> str:
-        from utils import sha256
-        return sha256(url)[:16]
-
-    # ------------------------------------------------------------------
     # Auto-forge trigger
     # ------------------------------------------------------------------
     def _maybe_forge_block(self) -> None:
-        """Forge a block if the mempool is full AND this node is elected."""
+        """Forge a block if the mempool is full AND it is this node's PoA turn."""
         if len(self.blockchain.mempool) < TRANSACTIONS_PER_BLOCK:
             return
-        validator = self._select_validator()
-        if validator == self.node_id:
+        if self._select_validator() == self.node_id:
             threading.Thread(target=self._forge_block, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -292,7 +276,6 @@ class NodeCore:
         for peer_url in seed_peers:
             peer_url = peer_url.rstrip("/")
             self.add_peer(peer_url)
-            # Tell the peer about us
             my_url = f"http://{self.host}:{self.port}"
             try:
                 requests.post(
@@ -300,7 +283,6 @@ class NodeCore:
                     json={"url": my_url},
                     timeout=REQUEST_TIMEOUT_SECONDS,
                 )
-                # Fetch their peer list
                 resp = requests.get(
                     f"{peer_url}/api/peers",
                     timeout=REQUEST_TIMEOUT_SECONDS,
@@ -312,7 +294,6 @@ class NodeCore:
             except Exception as exc:
                 logger.debug("Startup sync failed for %s: %s", peer_url, exc)
 
-        # Pull the best chain
         self.sync_chain()
 
     # ------------------------------------------------------------------
@@ -333,3 +314,4 @@ class NodeCore:
 
         for peer_url in self.peers:
             threading.Thread(target=_send, args=(peer_url,), daemon=True).start()
+

@@ -2,6 +2,8 @@
 blockchain.py - Block, Transaction, and Chain classes.
 
 Defines the core data structures used across the network.
+Uses Proof-of-Authority (PoA): only node IDs listed in
+config.AUTHORIZED_VALIDATORS may produce blocks.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from utils import (
     validate_transaction_fields,
     verify_signature,
 )
-from config import GENESIS_SENDER
+from config import GENESIS_SENDER, AUTHORIZED_VALIDATORS
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +140,7 @@ class Block:
     # ------------------------------------------------------------------
     def is_valid(self, previous_block: "Block | None") -> tuple[bool, str]:
         """
-        Validate this block's structural integrity.
+        Validate this block's structural integrity and PoA authority.
         Returns (is_valid, reason).
         """
         if self.hash != self._compute_hash():
@@ -148,6 +150,13 @@ class Block:
                 return False, "Non-consecutive block index"
             if self.previous_hash != previous_block.hash:
                 return False, "Previous hash mismatch"
+            # PoA: reject blocks signed by unauthorized validators
+            if (
+                AUTHORIZED_VALIDATORS
+                and self.validator not in AUTHORIZED_VALIDATORS
+                and self.validator != GENESIS_SENDER
+            ):
+                return False, f"Validator '{self.validator}' is not authorized"
         return True, "OK"
 
     # ------------------------------------------------------------------
@@ -190,17 +199,16 @@ class Block:
 
 class Blockchain:
     """
-    Manages the full chain, mempool, balances, and PoS stake tracking.
+    Manages the full chain, mempool, and balances.
+    Consensus: Proof-of-Authority (PoA) — only pre-approved node IDs may forge.
     """
 
     INITIAL_BALANCE = 1000.0     # starting balance for every address
-    INITIAL_STAKE = 100          # starting stake for every node
 
     def __init__(self) -> None:
         self.chain: list[Block] = []
         self.mempool: list[Transaction] = []
         self._balances: dict[str, float] = {}
-        self._stakes: dict[str, int] = {}
         self._create_genesis_block()
 
     # ------------------------------------------------------------------
@@ -228,16 +236,10 @@ class Blockchain:
         return len(self.chain) - 1  # genesis is height 0
 
     # ------------------------------------------------------------------
-    # Balance / stake helpers
+    # Balance helpers
     # ------------------------------------------------------------------
     def get_balance(self, address: str) -> float:
         return self._balances.get(address, self.INITIAL_BALANCE)
-
-    def get_stake(self, node_id: str) -> int:
-        return self._stakes.get(node_id, self.INITIAL_STAKE)
-
-    def set_stake(self, node_id: str, stake: int) -> None:
-        self._stakes[node_id] = stake
 
     def _apply_transaction(self, tx: Transaction) -> None:
         """Update in-memory balances for a confirmed transaction."""
@@ -381,7 +383,6 @@ class Blockchain:
         bc = cls.__new__(cls)
         bc.mempool = []
         bc._balances = {}
-        bc._stakes = {}
         bc.chain = [Block.from_dict(b) for b in data["chain"]]
         # Rebuild balances
         for block in bc.chain[1:]:
