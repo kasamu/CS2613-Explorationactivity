@@ -1,0 +1,18 @@
+# Blockchain node data files (generated at runtime)
+*_blockchain_data.json
+blockchain_data.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Node process logs
+/tmp/node_*.log
+/tmp/blockchain_nodes.pids
